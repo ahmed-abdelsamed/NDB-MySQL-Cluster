@@ -1,0 +1,205 @@
+create VG mounted /var/lib/mysql
+
+ssh copy id
+ipv6 disable
+
+vi /etc/sysctl.d/70-ipv6.conf
+
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+
+sysctl --load /etc/sysctl.d/70-ipv6.conf
+ip a | grep inet6
+
+sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+cat /etc/selinux/config | grep SELINUX=
+
+systemctl disable firewalld
+systemctl stop firewalld
+OR if enable firewalld
+
+on all nodes
+$ firewall-cmd --permanent --add-service mysql
+$ firewall-cmd --reload
+#ndb_mgmd on port 1186
+$firewalld-cmd --permanent --add-port=1186/tcp 
+$firewalld-cmd --reload
+$firewalld-cmd --permanent --add-port=2202/tcp 
+$firewalld-cmd --reload
+
+
+-----------
+#NTP:
+$  yum install chrony -y
+# systemctl start chronyd
+# systemctl enable chronyd
+# systemctl status chronyd
+
+vi /etc/chrony.conf
+'
+# pool 2.rhel.pool.ntp.org iburs
+
+ server 0.africa.pool.ntp.org
+ server 1.africa.pool.ntp.org
+ '
+ $ chronyc tracking
+ $ chronyc sources
+ $ chronyc sources -v
+ 
+ 
+
+
+------------------------------------
+- install all rpms on three nodes
+dnf install -y  perl-Data-Dumper perl-JSON perl-Memoize perl 
+dnf remove mariadb-libs
+rpm -Uvh mysql-cluster-community-*.rpm
+
+# on all nodes
+mkdir -p /var/lib/mysql/NDB-cluster/DATA
+chmod -R 775 /var/lib/mysql/NDB-cluster
+
+#MNG
+00$ vi /var/lib/mysql/NDB-cluster/config.ini
+'
+[ndbd default]
+NoOfReplicas=2      # Number of replicas
+DataMemory=100M
+IndexMemory 10M
+ 
+[ndb_mgmd]
+#Management Node db1
+hostname=192.168.56.101
+datadir=/var/lib/mysql/NDB-cluster
+NodeId=1
+
+[ndbd]
+#Data Node db2
+hostname=192.168.56.102
+NodeId=11
+datadir=/var/lib/mysql/NDB-cluster/DATA
+
+[ndbd]
+#Data Node db2
+hostname=192.168.56.103
+NodeId=12
+datadir=/var/lib/mysql/NDB-cluster/DATA
+
+[mysqld]
+#Data Node db3
+hostname=192.168.56.102
+NodeId=21
+
+[mysqld]
+#Data Node db3
+hostname=192.168.56.103
+NodeId=22
+'
+-------------
+on all Data Nodes & SQL Nodes
+$ vi /etc/my.cnf
+'
+# for mysqld nodes
+[mysqld]
+ndbcluster
+default-storage-engine=NDBCLUSTER
+
+#for data nodes
+[mysql_cluster]
+ndb-connectstring=192.168.56.101    # IP address of Management Node
+'
+
+#on mysqld & data nodes
+$ systemctl enable mysqld && systemctl start mysqld 
+
+$ mysql_secure_installtion
+
+'if need password '
+deafute root password 
+grep 'temporary password' /var/log/mysqld.log
+
+$mysql
+> show schemas;
+'dbinfo'
+
+
+-------------------
+on MNG:
+sudo nano /etc/systemd/system/ndb_mgmd.service
+---
+[Unit]
+Description=MySQL NDB Cluster Management Server
+After=network.target auditd.service
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/ndb_mgmd -f /var/lib/mysql/NDB-cluster/config.ini
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+--------------------
+systemctl deamon-reload
+systemctl enable ndb_mgmd
+systemctl start ndb_mgmd
+
+
+# Check
+00$ndb_mgm 
+not connect data &mysqld nodes 
+
+#on all data nodes
+
+sudo nano /etc/systemd/system/ndbd.service
+---
+[Unit]
+Description=MySQL NDB Data Node Daemon
+After=network.target auditd.service
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/ndbd
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+---------------------------------------
+systemctl deamon-reload
+systemctl enable ndbd 
+systemctl start ndbd 
+
+check default port for ndbd 
+ss -ntlp 
+firewalld-cmd --permanent --add-port=??/tcp 
+firewalld-cmd --reload 
+
+on sqld nodes or the same data nodes 
+systemctl start mysqld 
+systemctl enable mysqld 
+NOTE: in video --> mysql_safe & check after installed
+
+
+on Management
+00$ ndb_mgm
+> show 
+connected all  
+
+
+============================================
+## on data Nodes
+create user with full privielege
+node1
+mysql>grant all privieleges on *.* to demo@'%' identified by 'demo'; #password demo
+     > flush privieleges;
+     > select user,host from mysql.user; 
+
+node2:
+   > select user,host from mysql.user; 
+if not appear user demo 
+on node1
+> source /usr/share/mysql/ndb_dist_priv.sql;
+> call mysql.mysql_cluster_move_privileges();
